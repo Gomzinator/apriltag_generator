@@ -21,3 +21,8 @@ $ python ./make_tag.py --nx 1 --ny 1 --marginx 0.00 --marginy 0.00 --tsize 0.16 
 ```
 $ python ./make_tag.py --nx 2 --ny 2 --marginx 0.00 --marginy 0.00 --tsize 0.08 --tspace 0.1 --startid 0 --tfam t36h11 --borderbits 1
 ```
+
+### Generate a sequence of full-sized AprilTags on A4 papers (tag_id in [0 .. 29])
+```
+$ make_A4_single_tags.bat 30
+```
