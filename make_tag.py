@@ -1,14 +1,153 @@
 #!/usr/bin/python
 # Thomas Schneider, Sept 2013
 # Codes from AprilTags C++ Library (http://people.csail.mit.edu/kaess/apriltags/)
+# Modified: PDF text rendering without TeX dependency
 
 from pyx import *
+from pyx import baseclasses as _pyx_baseclasses
+from pyx import bbox as _pyx_bbox
+from pyx import pdfwriter as _pyx_pdfwriter
 import argparse
 import sys
 import importlib
 
 import math
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# PDF native text rendering (no TeX/LaTeX dependency)
+# Uses the 14 standard PDF fonts (Helvetica, Courier, Times, etc.)
+# Hooks into pyx's internal registry via PDFobject subclass.
+# ---------------------------------------------------------------------------
+
+class _PDFFontResource(_pyx_pdfwriter.PDFobject):
+    """A PDF Type1 font resource conforming to pyx's PDFobject protocol.
+    
+    Inherits from pyx.pdfwriter.PDFobject which provides:
+      - .type (str)
+      - .id (unique identifier)
+      - .merge(other)
+      - .refno (set by registry before write)
+    
+    We must implement write(file, writer, registry).
+    """
+
+    def __init__(self, fontname):
+        super().__init__(type="Font", _id="pdftextfont_" + fontname)
+        self.fontname = fontname
+
+    def write(self, file, writer, registry):
+        file.write("<<\n"
+                   "/Type /Font\n"
+                   "/Subtype /Type1\n"
+                   "/BaseFont /%s\n"
+                   ">>\n" % self.fontname)
+
+
+class _RawPDFText(_pyx_baseclasses.canvasitem):
+    """Renders text via raw PDF operators. Inherits from pyx canvasitem."""
+
+    def __init__(self, code, fontname, x_pt, y_pt, width_pt, height_pt):
+        self.code = code
+        self.fontname = fontname
+        self.x_pt = x_pt
+        self.y_pt = y_pt
+        self.width_pt = width_pt
+        self.height_pt = height_pt
+
+    def bbox(self):
+        return _pyx_bbox.bbox_pt(self.x_pt, self.y_pt,
+                                 self.x_pt + self.width_pt,
+                                 self.y_pt + self.height_pt)
+
+    def processPDF(self, file, writer, context, registry, bbox):
+        # Register font via pyx's registry protocol
+        font_res = _PDFFontResource(self.fontname)
+        registry.add(font_res)
+        # Also register in page resources so PDF reader finds it
+        registry.addresource("Font", self.fontname, font_res, procset="Text")
+        # Write raw PDF text operators
+        file.write_bytes(self.code.encode("ascii") + b"\n")
+
+    def processPS(self, file, writer, context, registry, bbox):
+        pass  # PS output not supported
+
+
+class PDFText:
+    """Draws text using native PDF operators — no TeX required.
+    
+    Uses Helvetica (one of the 14 standard PDF fonts), guaranteed
+    available in every PDF reader.
+    """
+
+    # Helvetica character widths (fraction of font size, from Adobe AFM)
+    CHAR_WIDTHS = {
+        ' ': 0.278, '!': 0.278, '"': 0.355, '#': 0.556, '$': 0.556,
+        '%': 0.889, '&': 0.667, "'": 0.191, '(': 0.333, ')': 0.333,
+        '*': 0.389, '+': 0.584, ',': 0.278, '-': 0.333, '.': 0.278,
+        '/': 0.278, '0': 0.556, '1': 0.556, '2': 0.556, '3': 0.556,
+        '4': 0.556, '5': 0.556, '6': 0.556, '7': 0.556, '8': 0.556,
+        '9': 0.556, ':': 0.278, ';': 0.278, '<': 0.584, '=': 0.584,
+        '>': 0.584, '?': 0.556, '@': 1.015, 'A': 0.667, 'B': 0.667,
+        'C': 0.722, 'D': 0.722, 'E': 0.667, 'F': 0.611, 'G': 0.778,
+        'H': 0.722, 'I': 0.278, 'J': 0.500, 'K': 0.667, 'L': 0.556,
+        'M': 0.833, 'N': 0.722, 'O': 0.778, 'P': 0.667, 'Q': 0.778,
+        'R': 0.722, 'S': 0.667, 'T': 0.611, 'U': 0.722, 'V': 0.667,
+        'W': 0.944, 'X': 0.667, 'Y': 0.667, 'Z': 0.611, '[': 0.278,
+        '\\': 0.278, ']': 0.278, '^': 0.469, '_': 0.556, '`': 0.333,
+        'a': 0.556, 'b': 0.556, 'c': 0.500, 'd': 0.556, 'e': 0.556,
+        'f': 0.278, 'g': 0.556, 'h': 0.556, 'i': 0.222, 'j': 0.222,
+        'k': 0.500, 'l': 0.222, 'm': 0.833, 'n': 0.556, 'o': 0.556,
+        'p': 0.556, 'q': 0.556, 'r': 0.333, 's': 0.500, 't': 0.278,
+        'u': 0.556, 'v': 0.500, 'w': 0.722, 'x': 0.500, 'y': 0.500,
+        'z': 0.500, '{': 0.334, '|': 0.260, '}': 0.334, '~': 0.584,
+    }
+    DEFAULT_WIDTH = 0.556
+
+    def __init__(self, font="Helvetica", size_pt=10):
+        self.font = font
+        self.size_pt = size_pt
+
+    def text_width_pt(self, text):
+        w = sum(self.CHAR_WIDTHS.get(ch, self.DEFAULT_WIDTH) for ch in text)
+        return w * self.size_pt
+
+    def text_width_cm(self, text):
+        return self.text_width_pt(text) * 0.0352778
+
+    def draw(self, cvs, x_cm, y_cm, text, r=0.0, g=0.0, b=0.0):
+        """Draw text at (x_cm, y_cm) in Helvetica.
+        
+        Args:
+            cvs: pyx canvas
+            x_cm, y_cm: position in cm
+            text: string to render
+            r, g, b: text color (0.0-1.0)
+        """
+        x_pt = x_cm / 0.0352778
+        y_pt = y_cm / 0.0352778
+        width_pt = self.text_width_pt(text)
+        height_pt = self.size_pt
+
+        escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        pdf_code = (
+            "q "
+            "%.3f %.3f %.3f rg "
+            "BT "
+            "/%s %.1f Tf "
+            "%.2f %.2f Td "
+            "(%s) Tj "
+            "ET "
+            "Q"
+        ) % (r, g, b, self.font, self.size_pt, x_pt, y_pt, escaped)
+
+        cvs.insert(_RawPDFText(pdf_code, self.font, x_pt, y_pt, width_pt, height_pt))
+
+
+# ---------------------------------------------------------------------------
+# AprilTag code data
+# ---------------------------------------------------------------------------
 
 class AprilTagCodes:
     t16h5=[0x231b, 0x2ea5, 0x346a, 0x45b9, 0x79a6, 0x7f6b, 0xb358, 0xe745, 0xfe59, 0x156d, 0x380b, 0xf0ab, 0x0d84, 0x4736, 0x8c72, 0xaf10, 0x093c, 0x93b4, 0xa503, 0x468f, 0xe137, 0x5795, 0xdf42, 0x1c1d, 0xe9dc, 0x73ad, 0xad5f, 0xd530, 0x07ca, 0xaf2e]
@@ -23,6 +162,11 @@ class AprilTagCodes:
                     #'t36h9':   (t36h9, 36),
                     't36h11':  (t36h11,36)}
 
+    TagFamilies = { 't16h5':   (t16h5,16),
+                    't25h7':   (t25h7,25),
+                    't25h9':   (t25h9,25),
+                    't36h11':  (t36h11,36)}
+
     def __init__(self, chosenTagFamiliy):
         try:
             self.chosenTagFamiliy = chosenTagFamiliy
@@ -31,6 +175,11 @@ class AprilTagCodes:
         except:
             print("[ERROR]: Unknown tag familiy.")
             sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Tag generation
+# ---------------------------------------------------------------------------
 
 #borderBits must be consitent with the variable "blackBorder" in the detector code in file ethz_apriltag2/src/TagFamily.cc
 def generateAprilTag(canvas, position, metricSize, tagSpacing, tagID, tagFamililyData, rotation=2, symmCorners=True, borderBits=2, ccolor=color.rgb.black):
@@ -87,9 +236,10 @@ def generateAprilTag(canvas, position, metricSize, tagSpacing, tagID, tagFamilil
         for point in corners:
             c.fill(path.rect(point[0], point[1], metricSquareSize, metricSquareSize),[ccolor])
 
+
 #tagSpaceing in % of tagSize
 def generateAprilBoard(canvas, n_cols, n_rows, margx, margy, tagSize, tagSpacing=0.25, tagFamily="t36h11",
-                       acolor = "Black", startid = 0,borderBits=2, symmCorners=False):
+                       acolor = "Black", startid = 0,borderBits=2, symmCorners=False, drawLegend=False):
     if(tagSpacing<0 or tagSpacing>1.0):
         print("[ERROR]: Invalid tagSpacing specified.  [0-1.0] of tagSize")
         sys.exit(0)
@@ -116,31 +266,43 @@ def generateAprilBoard(canvas, n_cols, n_rows, margx, margy, tagSize, tagSpacing
             id = startid + n_cols * y + x
             pos = ( margx*100 + x*(1+tagSpacing)*tagSize + tagSpacing*tagSize, margy*100 + y*(1+tagSpacing)*tagSize + tagSpacing*tagSize)
             generateAprilTag(canvas, pos, tagSize, tagSpacing, id, tagFamilyData, rotation=2, borderBits=borderBits, ccolor=ccolor, symmCorners=symmCorners)
-            #c.text(pos[0]+0.45*tagSize, pos[1]-0.7*tagSize*tagSpacing, "{0}".format(id))
             
-    #draw axis
-    drawLegend = False
+    #draw legend using native PDF text (no TeX dependency)
     if drawLegend:
-        pos = ( -1.5*tagSpacing*tagSize, -1.5*tagSpacing*tagSize)
-        c.stroke(path.line(pos[0], pos[1], pos[0]+tagSize*0.3, pos[1]),
-                 [color.rgb.red,
-                  deco.earrow([deco.stroked([color.rgb.red, style.linejoin.round]),
-                               deco.filled([color.rgb.red])], size=tagSize*0.10)])
-        c.text(pos[0]+tagSize*0.3, pos[1], "x")
-        c.stroke(path.line(pos[0], pos[1], pos[0], pos[1]+tagSize*0.3),
-                 [color.rgb.green,
-                  deco.earrow([deco.stroked([color.rgb.green, style.linejoin.round]),
-                               deco.filled([color.rgb.green])], size=tagSize*0.10)])
-        c.text(pos[0], pos[1]+tagSize*0.3, "y")
+        # @20cm of tagSize, makes a 15pt font
+        font_size    = int(0.75 * tagSize)
+        line_size    = font_size * 0.045
+        page_margin  = tagSize * 0.025
+        arrow_tip    = tagSize * 0.02
+        arrow_length = tagSize * 0.1
 
-        #text
-        caption = "{0}x{1} tags, size={2}cm and spacing={3}cm".format(n_cols,n_rows,tagSize,tagSpacing*tagSize)
-        c.text(pos[0]+0.6*tagSize, pos[0], caption)
+        pos = ( -1.5 * tagSpacing * tagSize, -1.5 * tagSpacing * tagSize )
+        pos_center_axis = ( pos[0] + page_margin, pos[1] + page_margin )
+        pos_center_text = ( pos[0] + (0.18 * tagSize), pos[1] + page_margin )
+
+        label_text = PDFText(font="Helvetica", size_pt=font_size)
+        caption_text = PDFText(font="Helvetica", size_pt=font_size)
+
+        # X axis arrow
+        c.stroke(path.line(pos_center_axis[0], pos_center_axis[1], pos_center_axis[0] + arrow_length, pos_center_axis[1]),
+            [color.rgb.red, deco.earrow([deco.stroked([color.rgb.red, style.linejoin.round]), deco.filled([color.rgb.red])], size=arrow_tip)])
+        label_text.draw(c, pos_center_axis[0] + (arrow_length * 1.05), pos_center_axis[1] -0.1, "x", r=1.0, g=0.0, b=0.0)
+
+        # Y axis arrow
+        c.stroke(path.line(pos_center_axis[0], pos_center_axis[1], pos_center_axis[0], pos_center_axis[1] + arrow_length),
+            [color.rgb.green, deco.earrow([deco.stroked([color.rgb.green, style.linejoin.round]), deco.filled([color.rgb.green])], size=arrow_tip)])
+        label_text.draw(c, pos_center_axis[0] -0.1, pos_center_axis[1] + (arrow_length * 1.15), "y", r=0.0, g=0.5, b=0.0)
+
+        # Caption
+        caption_lines = [
+            f"family={tagFamily}, tag_id={id}\n{n_cols}x{n_rows} tags",
+            f"size={tagSize}cm and spacing={tagSpacing*tagSize:.2f}cm",
+        ]
+        for idx, line in enumerate(reversed(caption_lines)):
+            caption_text.draw(c, pos_center_text[0], pos_center_text[1] + idx*line_size, line)
 
 
 if __name__ == "__main__":
-
-    # This code was lifted from Kalibr at some point...
 
     usage="""
         make_tag.py --nx 6 --ny 6 --tsize 0.08 --tspace 0.3
@@ -165,7 +327,8 @@ if __name__ == "__main__":
     aprilOptions.add_argument('--tfam', default='t36h11', dest='tagfamiliy', help='Familiy of April tags {0} (default: %(default)s)'.format(AprilTagCodes.TagFamilies.keys()))
     aprilOptions.add_argument('--startid', default=0, type=int, dest='startid', help='Start number for apriltag (default: %(default)s)')
     aprilOptions.add_argument('--borderbits', default=2, type=int, dest='borderBits', help='number of bits used for black border (default: %(default)s)')
-    aprilOptions.add_argument('--symm_corners', default=False, dest='symmCorners', action='store_true', help='add black corner squares (default: %(default)s)')
+    aprilOptions.add_argument('--symm-corners', default=False, dest='symmCorners', action='store_true', help='add black corner squares (default: %(default)s)')
+    aprilOptions.add_argument('--draw-legend', default=False, dest='drawLegend', action='store_true', help='add legend with axes and caption (default: %(default)s)')
     
     if len(sys.argv)==1:
         parser.print_help()
@@ -180,7 +343,7 @@ if __name__ == "__main__":
     #open a new canvas
     c = canvas.canvas()
 
-    generateAprilBoard(canvas, parsed.n_cols, parsed.n_rows, parsed.marginx, parsed.marginy, parsed.tsize, parsed.tagspacing, parsed.tagfamiliy, parsed.color, parsed.startid, borderBits=parsed.borderBits, symmCorners=parsed.symmCorners)
+    generateAprilBoard(canvas, parsed.n_cols, parsed.n_rows, parsed.marginx, parsed.marginy, parsed.tsize, parsed.tagspacing, parsed.tagfamiliy, parsed.color, parsed.startid, borderBits=parsed.borderBits, symmCorners=parsed.symmCorners, drawLegend=parsed.drawLegend)
             
     #write to file
     c.writePDFfile(parsed.output)
