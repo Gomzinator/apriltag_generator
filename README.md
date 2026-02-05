@@ -7,8 +7,9 @@ Images of all tags from all the pre-generated [AprilTag 3](https://github.com/Ap
 ## How to use
 ---
 ### Setup
+Reading the original project of pix, installation suggests that you can simply use pip : https://github.com/pyx-project/pyx/blob/master/INSTALL.md
 ```
-$ sudo apt install python-pyx
+$ pip install pyx
 ```
 
 ### Generate 1x1 AprilTag
