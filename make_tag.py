@@ -272,7 +272,7 @@ def generateAprilBoard(canvas, n_cols, n_rows, margx, margy, tagSize, tagSpacing
         # @20cm of tagSize, makes a 15pt font
         font_size    = int(0.75 * tagSize)
         line_size    = font_size * 0.045
-        page_margin  = tagSize * 0.025
+        page_margin  = tagSize * 0.045
         arrow_tip    = tagSize * 0.02
         arrow_length = tagSize * 0.1
 
@@ -334,7 +334,7 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(0)
         
-    #Parser the argument list
+    # Parser the argument list
     try:
         parsed = parser.parse_args()
     except:
